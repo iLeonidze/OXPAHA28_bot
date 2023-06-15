@@ -1,0 +1,9 @@
+version: '3'
+services:
+  sal34_bot:
+    image: ghcr.io/ileonidze/OXPAHA28_bot:latest
+    container_name: OXPAHA28_bot
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/opt/bot/config.yaml
+      - ./context.yaml:/opt/bot/context.yaml
