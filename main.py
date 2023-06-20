@@ -250,10 +250,11 @@ def reset_user_context(update: Update or int) -> None:
     })
 
 
-def update_user_requests_history(update: Update, messages_ids: Tuple) -> None:
+def update_user_requests_history(update: Update, messages_ids: List) -> None:
     requests_history = list(get_user_context(update).get('requests_history', []))
     for message_id in messages_ids:
-        requests_history.append(message_id)
+        if message_id not in requests_history:
+            requests_history.append(message_id)
     update_user_context(update, 'requests_history', requests_history)
     update_user_context(update, 'last_request', get_current_timestamp())
 
@@ -423,6 +424,8 @@ async def validate_request_already_exists(update: Update):
             message = f"{CONFIG['messages_templates']['request_already_exists']}\n{CONFIG['groups']['main']['public_link']}/{existing_request['message_id']}"
             await BOT.send_message(chat_id=update.effective_chat.id,
                                    text=message)
+            # write other's user message id to current user to receive notifications also
+            update_user_requests_history(update, [existing_request['message_id']])
             await go_restart(update)
             return True
 
@@ -539,7 +542,7 @@ async def proceed_group_chat_message(update: Update) -> None:
                 message = CONFIG['messages_templates']['received_response_from_responsible_person'] + update.effective_message.text + '\n\n' + update.effective_message.link
                 await BOT.send_message(text=message,
                                        chat_id=user_id)
-                return
+        return
 
 
 async def proceed_user_message(update: Update, _) -> None:
@@ -547,6 +550,14 @@ async def proceed_user_message(update: Update, _) -> None:
         return await proceed_group_chat_message(update)
 
     if update.effective_chat.type != 'private':
+        return
+
+    # TODO: this check is too slow
+    if await is_user_banned(update):
+        await BOT.send_message(text=CONFIG['messages_templates']['access_restricted'],
+                               chat_id=update.effective_chat.id,
+                               reply_markup=ReplyKeyboardRemove())
+        reset_user_context(update)
         return
 
     dialog_state = get_dialog_state(update)
@@ -875,6 +886,11 @@ async def proceed_user_message(update: Update, _) -> None:
 
         await update_dialog_state(update, 'select_street')
         return
+
+
+async def is_user_banned(update: Update):
+    chat_member = await BOT.get_chat_member(CONFIG['groups']['main']['id'], update.effective_user.id)
+    return chat_member.status == chat_member.BANNED
 
 
 def save_context():
