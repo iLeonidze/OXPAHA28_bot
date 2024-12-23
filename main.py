@@ -651,7 +651,7 @@ def prepare_debug_data(update, context):
 
 
 async def handle_bot_exception(update, context):
-    message = 'В работе бота oxpaha28_bot возникла ошибка:\n' \
+    message = 'В работе бота oxpaha28\\_bot возникла ошибка:\n' \
               '```\n' + str(traceback.format_exc()) + '\n```' \
               '\nDebug данные:\n```\n' + prepare_debug_data(update, context) + '\n```'
 
