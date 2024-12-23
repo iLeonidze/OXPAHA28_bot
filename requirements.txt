@@ -3,3 +3,4 @@ PyYAML
 better_profanity
 clean-text
 pytz
+pandas
