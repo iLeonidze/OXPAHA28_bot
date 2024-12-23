@@ -2,3 +2,4 @@ python-telegram-bot
 PyYAML
 better_profanity
 clean-text
+pytz

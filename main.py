@@ -1,9 +1,18 @@
+import datetime
+import json
+import os
+import sys
+import tempfile
 import time
 import re
+import traceback
+import uuid
 from threading import Timer
 from os.path import isfile
 from typing import Dict, Any, List, Tuple
 
+import pandas as pd
+import pytz
 import telegram.helpers
 from yaml import safe_load as yaml_safe_load
 from yaml import safe_dump as yaml_safe_dump
@@ -26,6 +35,27 @@ BOT: Bot
 RECENT_REQUESTS = []
 RECENT_REQUESTS_TIMER_MINS = 5
 
+COPYRIGHT_DISCLAIMER = "Copyright © 2023-2024 Федотов Леонид @iLeonidze" \
+                       "\n\n" \
+                       "ДАННОЕ ПРОГРАММНОЕ ОБЕСПЕЧЕНИЕ ПРЕДОСТАВЛЯЕТСЯ «КАК ЕСТЬ», БЕЗ КАКИХ-ЛИБО " \
+                       "ГАРАНТИЙ, ЯВНО ВЫРАЖЕННЫХ ИЛИ ПОДРАЗУМЕВАЕМЫХ, ВКЛЮЧАЯ ГАРАНТИИ ТОВАРНОЙ " \
+                       "ПРИГОДНОСТИ, СООТВЕТСТВИЯ ПО ЕГО КОНКРЕТНОМУ НАЗНАЧЕНИЮ И ОТСУТСТВИЯ " \
+                       "НАРУШЕНИЙ, НО НЕ ОГРАНИЧИВАЯСЬ ИМИ. НИ В КАКОМ СЛУЧАЕ АВТОРЫ ИЛИ " \
+                       "ПРАВООБЛАДАТЕЛИ НЕ НЕСУТ ОТВЕТСТВЕННОСТИ ПО КАКИМ-ЛИБО ИСКАМ, ЗА УЩЕРБ ИЛИ " \
+                       "ПО ИНЫМ ТРЕБОВАНИЯМ, В ТОМ ЧИСЛЕ, ПРИ ДЕЙСТВИИ КОНТРАКТА, ДЕЛИКТЕ ИЛИ ИНОЙ " \
+                       "СИТУАЦИИ, ВОЗНИКШИМ ИЗ-ЗА ИСПОЛЬЗОВАНИЯ ПРОГРАММНОГО ОБЕСПЕЧЕНИЯ ИЛИ ИНЫХ " \
+                       "ДЕЙСТВИЙ С ПРОГРАММНЫМ ОБЕСПЕЧЕНИЕМ." \
+                       "\n\n" \
+                       "Данное программное обеспечение не является официальным способом связи с " \
+                       "охраной, а также никак не связано с ООО \"ПИК-Комфорт\", " \
+                       "ООО \"ПИК-Комфорт Сириус\", ООО ЧОО \"НЕОМАКС\", ООО ЧОО \"НЕОМАКС-СБ\", " \
+                       "ООО ЧОО \"НЕОМАКС-СН\", ООО ЧОО \"ЕВРАЗИЯ ЦЕНТР\", " \
+                       "ООО \"АЙТИ СТАНДАРТ\", ООО \"ГП ИП\", а также любыми другими, опосредованно " \
+                       "связанными с вышеупомянутыми юридическими лицами." \
+                       "\n\n" \
+                       "Исходный код данного ПО является открытым и размещен по следующему адресу:\n" \
+                       "https://github.com/iLeonidze/oxpaha28_bot"
+
 
 def get_current_timestamp() -> int:
     return round(time.time() * 1000)
@@ -47,10 +77,30 @@ def set_interval(func, sec):
 
 async def send_request_to_main_group(update: Update, dry_run=False):
     user_context = get_user_context(update)
+    message_data = {
+        "date": get_current_time().isoformat(),
+        "category": None,
+        "problem_area": None,
+        "address": None,
+        "street": None,
+        "house": None,
+        "section": None,
+        "floor": None,
+        "flat": None,
+        "parking": None,
+        "storeroom": None,
+        "user": update.effective_user.id,
+        "details": None,
+        "media_message": None,
+        "media_type": None,
+        "geo": None
+    }
 
-    issue_type = user_context.get('selected_category')
-    issue_area = user_context.get('selected_problem_area')
+    issue_type = message_data['category'] = user_context.get('selected_category')
+    issue_area = message_data['problem_area'] = user_context.get('selected_problem_area')
     issue_description = encode_markdown(user_context.get('selected_details', 'не указано'))
+    if user_context.get('selected_details'):
+        message_data['details'] = user_context.get('selected_details')
 
     if update.effective_user.username:
         issue_username = '@' + encode_markdown(update.effective_user.username)
@@ -64,21 +114,28 @@ async def send_request_to_main_group(update: Update, dry_run=False):
 
     issue_address = 'ул\\. ' + user_context.get('selected_street') + \
                     ', дом ' + str(user_context.get('selected_house'))
+    message_data['street'] = user_context.get('selected_street')
+    message_data['house'] = user_context.get('selected_house')
 
     if user_context.get('selected_section'):
         issue_address += ', секция ' + str(user_context.get('selected_section'))
+        message_data['section'] = user_context.get('selected_section')
 
     if user_context.get('selected_floor'):
         issue_address += ', этаж ' + str(user_context.get('selected_floor'))
+        message_data['floor'] = user_context.get('selected_floor')
 
     if user_context.get('selected_flat'):
         issue_address += ', кв\\. ' + str(user_context.get('selected_flat'))
+        message_data['flat'] = user_context.get('selected_flat')
 
     if user_context.get('selected_storeroom'):
         issue_address += ', кл\\. ' + str(user_context.get('selected_storeroom'))
+        message_data['storeroom'] = user_context.get('selected_storeroom')
 
     if user_context.get('selected_parking'):
         issue_address += ', мм\\. ' + str(user_context.get('selected_parking'))
+        message_data['parking'] = user_context.get('selected_parking')
 
     message = CONFIG['messages_templates']['request'].format(
         type=issue_type,
@@ -87,6 +144,8 @@ async def send_request_to_main_group(update: Update, dry_run=False):
         username=issue_username,
         description=issue_description
     )
+
+    message_data['address'] = issue_address.replace('\\.', '.')
 
     message = message.replace('\n ', '\n')
 
@@ -109,6 +168,7 @@ async def send_request_to_main_group(update: Update, dry_run=False):
                                    file_size=file_size,
                                    height=height,
                                    width=width)
+            message_data['media_type'] = 'photo'
         elif file_type == 'gif':
             attachment = Animation(file_id=file_id,
                                    file_unique_id=file_unique_id,
@@ -116,6 +176,7 @@ async def send_request_to_main_group(update: Update, dry_run=False):
                                    height=height,
                                    width=width,
                                    duration=duration)
+            message_data['media_type'] = 'video'
         elif file_type == 'video':
             attachment = Video(file_id=file_id,
                                file_unique_id=file_unique_id,
@@ -123,10 +184,12 @@ async def send_request_to_main_group(update: Update, dry_run=False):
                                height=height,
                                width=width,
                                duration=duration)
+            message_data['media_type'] = 'video'
 
     if user_context.get('location_latitude') and 'место' in user_context.get('selected_problem_area'):
         location = Location(latitude=user_context.get('location_latitude'),
                             longitude=user_context.get('location_longitude'))
+        message_data['geo'] = str(user_context.get('location_latitude')) + ', ' + str(user_context.get('location_longitude'))
 
     if dry_run:
         return message, attachment, location
@@ -143,6 +206,7 @@ async def send_request_to_main_group(update: Update, dry_run=False):
     if attachment:
         message_details = await send_attachment(attachment, CONFIG['groups']['main']['id'], message_ids[0])
         message_ids.append(message_details.message_id)
+        message_data['media_message'] = message_details.message_id
 
     RECENT_REQUESTS.append({
         'message_id': message_ids[0],
@@ -150,6 +214,8 @@ async def send_request_to_main_group(update: Update, dry_run=False):
         'author_id': update.effective_user.id,
         'request_hash': get_request_hash(user_context)
     })
+
+    update_requests_history(message_ids[0], message_data)
 
     return message_ids
 
@@ -236,6 +302,13 @@ def update_user_context(update: Update or int, key: str, value: Any, overwrite=T
     user_context = get_user_context(update)
     if not user_context.get(key) or overwrite:
         user_context[key] = value
+        set_user_context(update, user_context)
+
+
+def delete_from_user_context(update: Update or int, key: str) -> None:
+    user_context = get_user_context(update)
+    if user_context.get(key):
+        del user_context[key]
         set_user_context(update, user_context)
 
 
@@ -486,6 +559,106 @@ async def reset_all_users_current_state(update: Update, _):
     await BOT.send_message(chat_id=update.effective_chat.id, text='Готово')
 
 
+def get_current_time():
+    return datetime.datetime.now(pytz.timezone(CONFIG['timezone']))
+
+
+async def current_time(update: Update, _):
+    # ignore any messages from non-personal dialogs
+    if update.effective_chat.type != 'private':
+        return
+
+    # if not enough rights - ignore command
+    if update.effective_user.id not in CONFIG['superusers']:
+        return
+
+    message = str(get_current_time())
+
+    await BOT.send_message(chat_id=update.effective_chat.id, text=message)
+
+
+def update_requests_history(message_id, message_data):
+    with open("requests.txt", "a", encoding="UTF-8") as f:
+        f.write(str(message_id) + " " + json.dumps(message_data, ensure_ascii=False, separators=(',', ':')) + "\n")
+
+
+async def export_requests_database(update: Update, _):
+    # ignore any messages from non-personal dialogs
+    if update.effective_chat.type != 'private':
+        return
+
+    # if not enough rights - ignore command
+    if update.effective_user.id not in CONFIG['superusers']:
+        return
+
+    status_message = await BOT.send_message(chat_id=update.effective_chat.id, text='Подготовка 0% - чтение базы')
+
+    try:
+        requests = {}
+        with open("requests.txt", "r", encoding='UTF-8') as f:
+            for line in f:
+                [message_id_str, message_data_json] = line.strip().split(' ', 1)
+                message_id = int(message_id_str)
+                message_data = json.loads(message_data_json)
+                requests[message_id] = message_data
+
+        await status_message.edit_text('Подготовка 50% - упаковка в файл')
+        df = pd.DataFrame.from_dict(requests, orient='index')
+        df = df.reindex(
+            columns=['date', 'category', 'problem_area', 'address', 'street', 'house', 'section',
+                     'floor', 'flat', 'parking', 'storeroom', 'user', 'details', 'media_message',
+                     'media_type', 'geo'])
+        df['date'] = pd.to_datetime(df['date'])
+        df['date'] = df['date'].apply(lambda x: x.tz_localize(None))
+
+        temp_filename = tempfile.gettempdir() + '/' + str(uuid.uuid4()) + '.xlsx'
+        df.to_excel(temp_filename)
+
+        await status_message.edit_text('Отправка файла...')
+
+        await BOT.sendDocument(chat_id=update.effective_chat.id,
+                               document=open(temp_filename, 'rb'),
+                               reply_to_message_id=update.message.message_id,
+                               filename='requests.xlsx')
+
+        await status_message.edit_text('Готово')
+        os.unlink(temp_filename)
+
+    except Exception as e:
+        await status_message.edit_text('Произошла ошибка во время экспорта')
+        raise e
+
+
+def prepare_debug_data(update, context):
+    user_context = get_user_context(update)
+
+    debug_data = "Update ID: " + str(update.update_id)
+
+    debug_data += "\n\nUser"
+    debug_data += "\n ID: " + str(update['effective_user']['id'])
+    debug_data += "\n Full name: " + str(update['effective_user']['full_name'])
+    debug_data += "\n Username: @" + str(update['effective_user']['username'])
+    debug_data += "\n Link: " + str(update['effective_user']['link'])
+
+    debug_data += "\n\nMessage"
+    debug_data += "\n ID: " + str(update['effective_message']['id'])
+    debug_data += "\n Text: " + str(update['effective_message']['text'])
+
+    debug_data += "\n\nUser Context"
+    debug_data += "\n" + json.dumps(user_context, indent=2, ensure_ascii=False)
+
+    return debug_data
+
+
+async def handle_bot_exception(update, context):
+    message = 'В работе бота oxpaha28\\_bot возникла ошибка:\n' \
+              '```\n' + str(traceback.format_exc()) + '\n```' \
+              '\nDebug данные:\n```\n' + prepare_debug_data(update, context) + '\n```'
+
+    for superuser_id in CONFIG['superusers']:
+        await BOT.send_message(chat_id=superuser_id,
+                               text=message,
+                               parse_mode='Markdown')
 
 
 def is_go_back_message(message):
@@ -534,7 +707,7 @@ async def go_restart(update) -> None:
 
 
 async def proceed_group_chat_message(update: Update) -> None:
-    if update.effective_message.from_user.id in CONFIG['responsible_persons'] \
+    if (update.effective_message.from_user.id in CONFIG['responsible_persons']) \
             and update.effective_message.reply_to_message is not None \
             and update.effective_message.reply_to_message.forward_from_message_id is not None:
         for user_id, user_data in CONTEXT['users'].items():
@@ -588,12 +761,20 @@ async def proceed_user_message(update: Update, _) -> None:
             await BOT.send_message(text=CONFIG['messages_templates']['rules'],
                                    chat_id=update.effective_chat.id,
                                    reply_markup=form_initial_keyboard())
+            await BOT.send_message(text=COPYRIGHT_DISCLAIMER,
+                                   chat_id=update.effective_chat.id,
+                                   reply_markup=form_initial_keyboard(),
+                                   disable_web_page_preview=True)
             return
 
         if 'контакты' in message.lower():
             await BOT.send_message(text=CONFIG['messages_templates']['contacts'],
                                    chat_id=update.effective_chat.id,
                                    reply_markup=form_initial_keyboard())
+            await BOT.send_message(text=COPYRIGHT_DISCLAIMER,
+                                   chat_id=update.effective_chat.id,
+                                   reply_markup=form_initial_keyboard(),
+                                   disable_web_page_preview=True)
             return
 
         if message not in CONFIG['keyphrases']['issues_categories']:
@@ -665,6 +846,23 @@ async def proceed_user_message(update: Update, _) -> None:
             await proceed_fallback(update, dialog_state)
             return
 
+        # remove future context data to avoid context spoofing and mixing types of selected places
+        delete_from_user_context(update, 'selected_details')
+        delete_from_user_context(update, 'selected_floor')
+        delete_from_user_context(update, 'selected_flat')
+        delete_from_user_context(update, 'selected_section')
+        delete_from_user_context(update, 'selected_parking')
+        delete_from_user_context(update, 'selected_storeroom')
+        delete_from_user_context(update, 'file_type')
+        delete_from_user_context(update, 'file_id')
+        delete_from_user_context(update, 'file_unique_id')
+        delete_from_user_context(update, 'file_size')
+        delete_from_user_context(update, 'file_height')
+        delete_from_user_context(update, 'file_width')
+        delete_from_user_context(update, 'file_duration')
+        delete_from_user_context(update, 'location_latitude')
+        delete_from_user_context(update, 'location_longitude')
+
         message = message.lower()
         update_user_context(update, 'selected_problem_area', message)
 
@@ -734,7 +932,7 @@ async def proceed_user_message(update: Update, _) -> None:
             return
 
         flat_number = int(message)
-        if flat_number < 1 or flat_number > 700:
+        if flat_number < 1 or flat_number > 2000:
             await proceed_fallback(update, dialog_state)
             return
 
@@ -749,7 +947,7 @@ async def proceed_user_message(update: Update, _) -> None:
             return
 
         parking_number = int(message)
-        if parking_number < 1 or parking_number > 500:
+        if parking_number < 1 or parking_number > 1000:
             await proceed_fallback(update, dialog_state)
             return
 
@@ -764,7 +962,7 @@ async def proceed_user_message(update: Update, _) -> None:
             return
 
         storeroom_number = int(message)
-        if storeroom_number < 1 or storeroom_number > 500:
+        if storeroom_number < 1 or storeroom_number > 1000:
             await proceed_fallback(update, dialog_state)
             return
 
@@ -794,11 +992,14 @@ async def proceed_user_message(update: Update, _) -> None:
                         replace_with_phone_number="",
                         lang="ru")
 
+        # remove newlines with beautiful sentence ending
+        message = message.replace(",\n", ", ").replace("!\n", "! ").replace(":\n", ": ").replace("\n", ". ").replace(".. ", ". ").replace("  ", " ").replace(" . ", ". ")
+
         # remove special chars
         message = re.sub(r"[^a-zA-Zа-яА-Я0-9 ,.:;\-()!?\"]", "", message)
 
         # remove urls if they still exists
-        message = re.sub(r"[0-9a-zA-Z\-]*(.com|.ru|.org|.su|.net|.рф|.cc|.ly|.at|.io)", "", message)
+        message = re.sub(r"[0-9a-zA-Z\-]*(\.com|\.ru|\.org|\.su|\.net|\.рф|\.cc|\.ly|\.at|\.io)", "", message)
 
         # in case when message was full of bad symbols and now it is empty
         if message == '':
@@ -945,10 +1146,20 @@ def main():
     reset_all_users_current_state_handler = CommandHandler('reset_all_users_current_state', reset_all_users_current_state)
     application.add_handler(reset_all_users_current_state_handler)
 
+    # technical command - return bot current time
+    current_time_handler = CommandHandler('current_time', current_time)
+    application.add_handler(current_time_handler)
+
+    # technical command - return file with all requests
+    export_requests_database_handler = CommandHandler('export_requests_database', export_requests_database)
+    application.add_handler(export_requests_database_handler)
+
     # any raw messages from users
     # TODO: add filter only private messages
     messages_handler = MessageHandler((filters.TEXT | filters.PHOTO | filters.VIDEO | filters.LOCATION | filters.ANIMATION) & (~filters.COMMAND), proceed_user_message)
     application.add_handler(messages_handler)
+
+    application.add_error_handler(handle_bot_exception)
 
     global BOT
     BOT = application.bot
